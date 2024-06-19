@@ -10,7 +10,7 @@ extern crate i2cdev;
 use sensors::apds9930::{Apds9930Proximity, APDS9930_I2C_ADDR};
 use sensors::ap3216::{Ap3216Proximity, AP3216_I2C_ADDR};
 use sensors::Proximity;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -232,12 +232,14 @@ fn main() {
             dev.set_pgain(8).unwrap();
             dev.set_again(120).unwrap();
 
-            loop {
-                println!("ch0: {}", dev.get_ch0_data().unwrap());
-                println!("ch1: {}", dev.get_ch1_data().unwrap());
-                println!("proximity: {}", dev.get_proximity().unwrap());
-                thread::sleep(Duration::from_millis(100));
-            }
+            thread::spawn(move || {
+                loop {
+                    println!("[APDS-9930@0x{:x}] ch0: {}", APDS9930_I2C_ADDR, dev.get_ch0_data().unwrap());
+                    println!("[APDS-9930@0x{:x}] ch1: {}", APDS9930_I2C_ADDR, dev.get_ch1_data().unwrap());
+                    println!("[APDS-9930@0x{:x}] proximity: {}", APDS9930_I2C_ADDR, dev.get_proximity().unwrap());
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
         }
         Err(e) => println!("[APDS-9930@0x{:x}] No such device!, {:?}", APDS9930_I2C_ADDR, e),
     };
@@ -247,19 +249,24 @@ fn main() {
     let ap3216_dev = Ap3216Proximity::new(ap3216_i2cdev);
     match ap3216_dev {
         Ok(mut dev) => {
-            println!("AP3216@0x{:x} found!", AP3216_I2C_ADDR);
+            println!("[AP3216@0x{:x}] found!", AP3216_I2C_ADDR);
 
-            loop {
-                println!("ir: {}", dev.get_ir_data().unwrap());
-                println!("als: {}", dev.get_als_data().unwrap());
-                println!("proximity: {}", dev.get_proximity().unwrap());
+            thread::spawn(move || {
+                loop {
+                    println!("[AP3216@0x{:x}] ir: {}", AP3216_I2C_ADDR, dev.get_ir_data().unwrap());
+                    println!("[AP3216@0x{:x}] als: {}", AP3216_I2C_ADDR, dev.get_als_data().unwrap());
+                    println!("[AP3216@0x{:x}] proximity: {}", AP3216_I2C_ADDR, dev.get_proximity().unwrap());
 
-                // println!("object detected: {}", dev.is_obj_detected());
+                    // println!("object detected: {}", dev.is_obj_detected());
 
-                thread::sleep(Duration::from_millis(100));
-            }
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
         }
         Err(e) => println!("[AP3216@0x{:x}] No such device!, {:?}", AP3216_I2C_ADDR, e),
     }
 
+    loop {
+        thread::sleep(Duration::from_millis(100));
+    }
 }
