@@ -9,6 +9,8 @@ extern crate i2cdev;
 // use std::num::ParseIntError;
 use sensors::apds9930::{Apds9930Proximity, APDS9930_I2C_ADDR};
 use sensors::ap3216::{Ap3216Proximity, AP3216_I2C_ADDR};
+use sensors::sk33562::{Sk33562Proximity, SK33562_I2C_ADDR};
+use sensors::ltr553als::{Ltr553alsProximity, LTR553ALS_I2C_ADDR};
 use sensors::Proximity;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -24,6 +26,111 @@ mod sensors {
         type Error: Error;
 
         fn get_proximity(&mut self) -> Result<u16, Self::Error>;
+    }
+
+    pub mod ltr553als {
+        use std::thread;
+        use std::time::Duration;
+        use i2cdev::core::I2CDevice;
+
+        use super::Proximity;
+
+        pub const LTR553ALS_I2C_ADDR: u16 = 0x23;
+
+        pub struct Ltr553alsProximity<T> {
+            i2cdev: T,
+        }
+
+        impl<T> Ltr553alsProximity<T>
+        where
+            T: I2CDevice + Sized,
+        {
+            fn write_reg(&mut self, reg: u8, data: u8) -> Result<(), T::Error> {
+                self.i2cdev.smbus_write_byte_data(reg, data)
+            }
+            fn read_reg(&mut self, reg: u8)-> Result<u8, T::Error> {
+                self.i2cdev.smbus_read_byte_data(reg)
+            }
+
+            pub fn new(i2cdev: T) -> Result<Ltr553alsProximity<T>, T::Error> {
+                let mut ltr553als = Ltr553alsProximity { i2cdev };
+                ltr553als.write_reg(0x81, 0x03)?;
+                ltr553als.write_reg(0x83, 0x0f)?;
+                Ok(ltr553als)
+            }
+        }
+
+        impl<T> Proximity for Ltr553alsProximity<T>
+        where
+            T: I2CDevice + Sized,
+        {
+            type Error = T::Error;
+
+            fn get_proximity(&mut self) -> Result<u16, Self::Error> {
+                let ps_data_0 = self.read_reg(0x8d)?;
+                let ps_data_1 = self.read_reg(0x8e)?;
+                Ok((((ps_data_1 & 0x7) as u16) << 8) | ps_data_0 as u16)
+            }
+        }
+    }
+
+    pub mod sk33562 {
+        use std::thread;
+        use std::time::Duration;
+        use i2cdev::core::I2CDevice;
+
+        use super::Proximity;
+
+        pub const SK33562_I2C_ADDR: u16 = 0x46;
+
+        pub struct Sk33562Proximity<T> {
+            i2cdev: T,
+        }
+
+        impl<T> Sk33562Proximity<T>
+        where
+            T: I2CDevice + Sized,
+        {
+            fn write_reg(&mut self, reg: u8, data: u8) -> Result<(), T::Error> {
+                self.i2cdev.smbus_write_byte_data(reg, data)
+            }
+            fn read_reg(&mut self, reg: u8) -> Result<u8, T::Error> {
+                self.i2cdev.smbus_read_byte_data(reg)
+            }
+
+            pub fn new(i2cdev: T) -> Result<Sk33562Proximity<T>, T::Error> {
+                let mut sk33562 = Sk33562Proximity { i2cdev };
+                sk33562.write_reg(0x80, 0x01)?;
+                thread::sleep(Duration::from_millis(50));
+                sk33562.write_reg(0x0, 0x03)?;
+                sk33562.write_reg(0x01, 0x3 << 4)?;
+                sk33562.write_reg(0x3, 0xA << 4)?;
+                sk33562.write_reg(0x6, 0)?;
+                sk33562.write_reg(0x7, 0)?;
+                Ok(sk33562)
+            }
+
+            pub fn get_als_data(&mut self) -> Result<u16, T::Error> {
+                let reg_als_low = self.read_reg(0x13).unwrap();
+                let reg_als_high = self.read_reg(0x14).unwrap();
+
+                Ok((reg_als_low as  u16) << 8 | reg_als_high as u16)
+            }
+        }
+
+        impl<T> Proximity for Sk33562Proximity<T>
+        where
+            T: I2CDevice + Sized,
+        {
+            type Error = T::Error;
+
+            fn get_proximity(&mut self) -> Result<u16, Self::Error> {
+                let msb = self.read_reg(0x11)?;
+                let lsb = self.read_reg(0x12)?;
+                Ok((msb as  u16) << 8 | lsb as u16)
+                // Ok(lsb as u16)
+            }
+        }
     }
 
     pub mod ap3216 {
@@ -58,6 +165,8 @@ mod sensors {
 
                 /* set system mode, ALS and PS+IR function active */
                 ap3216_dev.write_reg(0, 0x3)?;
+                ap3216_dev.write_reg(0x20, 0x3 << 2)?;
+                ap3216_dev.write_reg(0x21, 0x3 << 4)?;
                 thread::sleep(Duration::from_millis(14));
                 Ok(ap3216_dev)
             }
@@ -223,6 +332,10 @@ mod sensors {
     }
 }
 
+// ifconfig eth0 up && udhcpc -i eth0
+// mount -t nfs -o nolock,vers=3 192.168.50.184:/home/iotah/.nfs_share /mnt
+// echo "1 4 1 7" > /proc/sys/kernel/printk
+
 fn main() {
     let apds9930_i2cdev = LinuxI2CDevice::new("/dev/i2c-3", APDS9930_I2C_ADDR).unwrap();
     let apds9930_dev = Apds9930Proximity::new(apds9930_i2cdev);
@@ -257,13 +370,53 @@ fn main() {
                     println!("[AP3216@0x{:x}] als: {}", AP3216_I2C_ADDR, dev.get_als_data().unwrap());
                     println!("[AP3216@0x{:x}] proximity: {}", AP3216_I2C_ADDR, dev.get_proximity().unwrap());
 
-                    // println!("object detected: {}", dev.is_obj_detected());
+                    println!("object detected: {}", dev.is_obj_detected());
 
                     thread::sleep(Duration::from_millis(100));
                 }
             });
         }
         Err(e) => println!("[AP3216@0x{:x}] No such device!, {:?}", AP3216_I2C_ADDR, e),
+    }
+
+    let sk33562_i2cdev = LinuxI2CDevice::new("/dev/i2c-3", SK33562_I2C_ADDR).unwrap();
+    let sk33562_dev = Sk33562Proximity::new(sk33562_i2cdev);
+    match sk33562_dev {
+        Ok(mut dev) => {
+            println!("[SK33562@0x{:x}] found!", SK33562_I2C_ADDR);
+
+            thread::spawn(move || {
+                loop {
+                    println!("[SK33562@0x{:x}] als: {}", SK33562_I2C_ADDR, dev.get_als_data().unwrap());
+                    println!("[SK33562@0x{:x}] proximity: {}", SK33562_I2C_ADDR, dev.get_proximity().unwrap());
+
+                    // println!("object detected: {}", dev.is_obj_detected());
+
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
+        }
+        Err(e) => println!("[SK33562@0x{:x}] No such device!, {:?}", SK33562_I2C_ADDR, e),
+    }
+
+    let ltr553als_i2cdev = LinuxI2CDevice::new("/dev/i2c-3", LTR553ALS_I2C_ADDR).unwrap();
+    let ltr553als_dev = Ltr553alsProximity::new(ltr553als_i2cdev);
+    match ltr553als_dev {
+        Ok(mut dev) => {
+            println!("[LTR553ALS@0x{:x}] found!", LTR553ALS_I2C_ADDR);
+
+            thread::spawn(move || {
+                loop {
+                    // println!("[LTR553ALS@0x{:x}] als: {}", SK33562_I2C_ADDR, dev.get_als_data().unwrap());
+                    println!("[LTR553ALS@0x{:x}] proximity: {}", LTR553ALS_I2C_ADDR, dev.get_proximity().unwrap());
+
+                    // println!("object detected: {}", dev.is_obj_detected());
+
+                    thread::sleep(Duration::from_millis(100));
+                }
+            });
+        }
+        Err(e) => println!("[LTR553ALS@0x{:x}] No such device!, {:?}", LTR553ALS_I2C_ADDR, e),
     }
 
     loop {
